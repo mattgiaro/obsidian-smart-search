@@ -201,76 +201,83 @@ export class SearchIndex {
         const lowerQuery = query.toLowerCase().trim();
         const processedQuery = this.nlpProcessor.processQuery(query);
         
-        // First pass: Find exact matches in titles and content
-        const exactMatches = this.findExactMatches(lowerQuery);
+        // Get related terms for semantic search
+        const relatedTerms = this.getRelatedTerms(lowerQuery);
         
-        // Second pass: NLP-based search for remaining files
-        const nlpResults = this.rankResults(processedQuery, exactMatches);
+        // First pass: Find exact title matches
+        const exactTitleMatches = this.findExactTitleMatches(lowerQuery);
         
-        // Combine results, with exact matches at the top
-        return [...exactMatches, ...nlpResults].slice(0, 50);
+        // Second pass: Find exact content matches
+        const exactContentMatches = this.findExactContentMatches(lowerQuery, new Set(exactTitleMatches.map(f => f.path)));
+        
+        // Third pass: Find semantic title matches
+        const semanticTitleMatches = this.findSemanticTitleMatches(lowerQuery, relatedTerms, 
+            new Set([...exactTitleMatches, ...exactContentMatches].map(f => f.path)));
+        
+        // Fourth pass: NLP-based search for remaining files
+        const nlpResults = this.rankResults(processedQuery, relatedTerms,
+            new Set([...exactTitleMatches, ...exactContentMatches, ...semanticTitleMatches].map(f => f.path)));
+        
+        // Combine results in priority order
+        return [...exactTitleMatches, ...exactContentMatches, ...semanticTitleMatches, ...nlpResults].slice(0, 50);
     }
 
-    private findExactMatches(lowerQuery: string): IndexedFile[] {
-        const exactMatches: Array<{ file: IndexedFile; score: number }> = [];
+    private findExactTitleMatches(lowerQuery: string): IndexedFile[] {
+        const matches: IndexedFile[] = [];
         
         for (const file of this.index.values()) {
-            let score = 0;
             const lowerTitle = file.filename.toLowerCase();
             
-            // Exact title match gets highest priority
-            if (lowerTitle === lowerQuery) {
-                score = 100; // Highest score for exact title match
-            }
-            // Title contains query as a word
-            else if (new RegExp(`\\b${lowerQuery}\\b`).test(lowerTitle)) {
-                score = 90;
-            }
-            // Title contains query as a substring
-            else if (lowerTitle.includes(lowerQuery)) {
-                score = 80;
-            }
-            
-            // Check content for exact matches if no title match found
-            if (score === 0) {
-                const content = file.processed.tokens.join(' ').toLowerCase();
-                if (new RegExp(`\\b${lowerQuery}\\b`).test(content)) {
-                    score = 70; // Lower score for content match
-                }
-            }
-            
-            if (score > 0) {
-                exactMatches.push({ file, score });
+            // Check for exact title match or title containing the exact word
+            if (lowerTitle === lowerQuery || new RegExp(`\\b${lowerQuery}\\b`).test(lowerTitle)) {
+                matches.push(file);
             }
         }
         
-        return exactMatches
+        return matches;
+    }
+
+    private findExactContentMatches(lowerQuery: string, excludePaths: Set<string>): IndexedFile[] {
+        const matches: Array<{ file: IndexedFile; score: number }> = [];
+        
+        for (const file of this.index.values()) {
+            if (excludePaths.has(file.path)) continue;
+            
+            const content = file.processed.tokens.join(' ').toLowerCase();
+            if (new RegExp(`\\b${lowerQuery}\\b`).test(content)) {
+                matches.push({ file, score: 70 });
+            }
+        }
+        
+        return matches
             .sort((a, b) => b.score - a.score)
             .map(result => result.file);
     }
 
-    private rankResults(query: ProcessedQuery, exactMatches: IndexedFile[]): IndexedFile[] {
-        const results: Array<{ file: IndexedFile; score: number }> = [];
-        const exactMatchPaths = new Set(exactMatches.map(file => file.path));
+    private findSemanticTitleMatches(lowerQuery: string, relatedTerms: string[], excludePaths: Set<string>): IndexedFile[] {
+        const matches: IndexedFile[] = [];
         
-        // Get all search terms including related terms
-        const searchTerms = new Set([
-            ...query.keywords,
-            ...query.relatedTerms,
-            ...query.keywords.flatMap(term => this.getRelatedTerms(term))
-        ]);
-
-        // Early return if no search terms
-        if (searchTerms.size === 0) return [];
-
-        // Convert search terms to lowercase once
-        const lowerSearchTerms = Array.from(searchTerms).map(term => term.toLowerCase());
-
         for (const file of this.index.values()) {
-            // Skip files that were already matched exactly
-            if (exactMatchPaths.has(file.path)) continue;
+            if (excludePaths.has(file.path)) continue;
             
-            const score = this.calculateRelevanceScore(file, query, lowerSearchTerms);
+            const lowerTitle = file.filename.toLowerCase();
+            // Check if title contains any related term as a whole word
+            if (relatedTerms.some(term => new RegExp(`\\b${term}\\b`).test(lowerTitle))) {
+                matches.push(file);
+            }
+        }
+        
+        return matches;
+    }
+
+    private rankResults(query: ProcessedQuery, relatedTerms: string[], excludePaths: Set<string>): IndexedFile[] {
+        const results: Array<{ file: IndexedFile; score: number }> = [];
+        
+        for (const file of this.index.values()) {
+            // Skip files that were already matched
+            if (excludePaths.has(file.path)) continue;
+            
+            const score = this.calculateRelevanceScore(file, query, [...query.keywords, ...relatedTerms]);
             if (score > 0) {
                 results.push({ file, score });
             }
@@ -279,7 +286,6 @@ export class SearchIndex {
             if (results.length >= 100) break;
         }
 
-        // Sort by score descending and return top results
         return results
             .sort((a, b) => b.score - a.score)
             .map(result => result.file);

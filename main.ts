@@ -100,17 +100,20 @@ class SearchModal extends Modal {
 				resultDiv.style.backgroundColor = 'var(--background-secondary)';
 			});
 
-			// Title
+			// Title with larger font
 			const titleEl = resultDiv.createDiv('search-result-title');
 			titleEl.setText(file.filename);
 			titleEl.style.fontWeight = 'bold';
-			titleEl.style.marginBottom = '4px';
+			titleEl.style.fontSize = '1.2em'; // 20% larger
+			titleEl.style.marginBottom = '8px'; // Increased spacing
 
-			// Match reason (in italics)
+			// Match reason (in italics) with increased line height
 			const matchReason = resultDiv.createDiv('search-result-reason');
 			matchReason.style.fontStyle = 'italic';
 			matchReason.style.fontSize = '0.9em';
 			matchReason.style.color = 'var(--text-muted)';
+			matchReason.style.lineHeight = '1.4'; // Increased line height
+			matchReason.style.marginTop = '4px'; // Additional spacing
 			
 			// Get match reason
 			const reason = this.getMatchReason(file, query);
@@ -131,14 +134,21 @@ class SearchModal extends Modal {
 		const lowerQuery = query.toLowerCase().trim();
 		const content = file.processed.tokens.join(' ');
 
-		// Helper function to highlight keywords in text
+		// Helper function to highlight keywords in text with word boundaries
 		const highlightKeywords = (text: string, terms: string[]): string => {
 			let result = text;
 			terms.forEach(term => {
-				const regex = new RegExp(`(${term})`, 'gi');
+				// Use word boundaries to match only whole words
+				const regex = new RegExp(`\\b(${term})\\b`, 'gi');
 				result = result.replace(regex, '**$1**');
 			});
 			return result;
+		};
+
+		// Helper function to check if a term exists as a whole word
+		const hasWholeWord = (text: string, term: string): boolean => {
+			const regex = new RegExp(`\\b${term}\\b`, 'i');
+			return regex.test(text);
 		};
 
 		// Helper function to get a concise preview
@@ -146,9 +156,9 @@ class SearchModal extends Modal {
 			// Split into sentences for more natural breaks
 			const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 0);
 			
-			// Find the first sentence containing any search term
+			// Find the first sentence containing any search term as a whole word
 			const matchingSentence = sentences.find(sentence => 
-				searchTerms.some(term => sentence.toLowerCase().includes(term.toLowerCase()))
+				searchTerms.some(term => hasWholeWord(sentence.toLowerCase(), term.toLowerCase()))
 			);
 
 			if (!matchingSentence) {
@@ -159,14 +169,22 @@ class SearchModal extends Modal {
 
 			// If sentence is too long, get context around the first matching term
 			if (matchingSentence.length > 150) {
-				const matchIndex = searchTerms.reduce((index, term) => {
-					const termIndex = matchingSentence.toLowerCase().indexOf(term.toLowerCase());
-					return termIndex !== -1 && (index === -1 || termIndex < index) ? termIndex : index;
-				}, -1);
+				let bestMatchIndex = -1;
+				
+				// Find the earliest matching term in the sentence
+				for (const term of searchTerms) {
+					const match = matchingSentence.toLowerCase().match(new RegExp(`\\b${term.toLowerCase()}\\b`));
+					if (match && match.index !== undefined) {
+						if (bestMatchIndex === -1 || match.index < bestMatchIndex) {
+							bestMatchIndex = match.index;
+						}
+					}
+				}
 
-				if (matchIndex !== -1) {
-					const start = Math.max(0, matchIndex - 60);
-					const end = Math.min(matchingSentence.length, matchIndex + 90);
+				// If we found a match, create a context window around it
+				if (bestMatchIndex !== -1) {
+					const start = Math.max(0, bestMatchIndex - 60);
+					const end = Math.min(matchingSentence.length, bestMatchIndex + 90);
 					const preview = matchingSentence.slice(start, end);
 					return (start > 0 ? "..." : "") + highlightKeywords(preview, searchTerms) + (end < matchingSentence.length ? "..." : "");
 				}
@@ -178,7 +196,7 @@ class SearchModal extends Modal {
 		// Get related terms for semantic search
 		const relatedTerms = Object.entries(this.searchIndex.getEmotionMap())
 			.filter(([emotion, terms]) => 
-				emotion === lowerQuery || terms.includes(lowerQuery))
+				hasWholeWord(lowerQuery, emotion) || terms.some(term => hasWholeWord(lowerQuery, term)))
 			.flatMap(([emotion, terms]) => [emotion, ...terms]);
 
 		// Get preview with all relevant terms

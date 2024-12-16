@@ -27,6 +27,13 @@ This sample plugin demonstrates some of the basic functionality the plugin API c
 Search function priortizes exact matches in titles and note content.
 Then, it will search based on NLP.
 
+
+1. Search the TITLE . (exact match)
+2. then search exact match in file
+3. NLP in Title
+4. NLP in File Content 
+
+
 ## Releasing new releases
 
 - Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.

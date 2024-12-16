@@ -129,9 +129,7 @@ class SearchModal extends Modal {
 
 	private getMatchReason(file: IndexedFile, query: string): string {
 		const lowerQuery = query.toLowerCase().trim();
-		const lowerTitle = file.filename.toLowerCase();
 		const content = file.processed.tokens.join(' ');
-		const headers = file.structuredContent.headers;
 
 		// Helper function to highlight keywords in text
 		const highlightKeywords = (text: string, terms: string[]): string => {
@@ -143,88 +141,49 @@ class SearchModal extends Modal {
 			return result;
 		};
 
-		// Helper function to find the line containing the match
-		const findMatchingLine = (text: string, searchTerms: string[]): string | null => {
-			const lines = text.split('\n');
-			const matchingLine = lines.find(line => 
-				searchTerms.some(term => 
-					line.toLowerCase().includes(term.toLowerCase()))
-			);
-			return matchingLine ? matchingLine.trim() : null;
-		};
-
 		// Helper function to get a concise preview
 		const getPreview = (text: string, searchTerms: string[]): string => {
-			const lines = text.split('\n')
-				.map(line => line.trim())
-				.filter(line => line.length > 0);
+			// Split into sentences for more natural breaks
+			const sentences = text.split(/[.!?]+/).map(s => s.trim()).filter(s => s.length > 0);
 			
-			// Find up to two lines containing any of the search terms
-			const matchingLines = lines.filter(line => 
-				searchTerms.some(term => 
-					line.toLowerCase().includes(term.toLowerCase()))
-			).slice(0, 2);
-
-			if (matchingLines.length === 0) {
-				// If no matches, return first non-empty line
-				return lines[0] ? lines[0].slice(0, 100) + "..." : "Empty note";
-			}
-
-			// Join matching lines and highlight terms
-			return highlightKeywords(
-				matchingLines.join(' | ').slice(0, 150) + (matchingLines.join(' ').length > 150 ? "..." : ""),
-				searchTerms
+			// Find the first sentence containing any search term
+			const matchingSentence = sentences.find(sentence => 
+				searchTerms.some(term => sentence.toLowerCase().includes(term.toLowerCase()))
 			);
-		};
 
-		// For title matches
-		if (lowerTitle === lowerQuery || lowerTitle.includes(lowerQuery)) {
-			const matchingLine = findMatchingLine(content, [lowerQuery]);
-			if (matchingLine) {
-				return highlightKeywords(matchingLine, [lowerQuery]);
+			if (!matchingSentence) {
+				// If no matching sentence, take the first sentence
+				const firstSentence = sentences[0] || "Empty note";
+				return firstSentence.length > 150 ? firstSentence.slice(0, 147) + "..." : firstSentence;
 			}
-			return "Empty note";
-		}
 
-		// Check headers
-		const matchingHeader = headers.find(h => 
-			h.toLowerCase().includes(lowerQuery));
-		if (matchingHeader) {
-			return highlightKeywords(matchingHeader, [lowerQuery]);
-		}
+			// If sentence is too long, get context around the first matching term
+			if (matchingSentence.length > 150) {
+				const matchIndex = searchTerms.reduce((index, term) => {
+					const termIndex = matchingSentence.toLowerCase().indexOf(term.toLowerCase());
+					return termIndex !== -1 && (index === -1 || termIndex < index) ? termIndex : index;
+				}, -1);
 
-		// Check for exact content match
-		const matchingLine = findMatchingLine(content, [lowerQuery]);
-		if (matchingLine) {
-			if (matchingLine.length > 150) {
-				const words = matchingLine.split(/\s+/);
-				const matchIndex = words.findIndex(w => 
-					w.toLowerCase().includes(lowerQuery));
 				if (matchIndex !== -1) {
-					const start = Math.max(0, matchIndex - 5);
-					const end = Math.min(words.length, matchIndex + 6);
-					return `...${highlightKeywords(words.slice(start, end).join(' '), [lowerQuery])}...`;
+					const start = Math.max(0, matchIndex - 60);
+					const end = Math.min(matchingSentence.length, matchIndex + 90);
+					const preview = matchingSentence.slice(start, end);
+					return (start > 0 ? "..." : "") + highlightKeywords(preview, searchTerms) + (end < matchingSentence.length ? "..." : "");
 				}
 			}
-			return highlightKeywords(matchingLine, [lowerQuery]);
-		}
 
-		// For semantic matches, find relevant lines with related terms
+			return highlightKeywords(matchingSentence, searchTerms);
+		};
+
+		// Get related terms for semantic search
 		const relatedTerms = Object.entries(this.searchIndex.getEmotionMap())
 			.filter(([emotion, terms]) => 
 				emotion === lowerQuery || terms.includes(lowerQuery))
 			.flatMap(([emotion, terms]) => [emotion, ...terms]);
 
-		if (relatedTerms.length > 0) {
-			return getPreview(content, [lowerQuery, ...relatedTerms]);
-		}
-
-		// Fallback to first line with some content
-		const firstNonEmptyLine = content.split('\n')
-			.find(line => line.trim().length > 0);
-		return firstNonEmptyLine ? 
-			(firstNonEmptyLine.length > 150 ? firstNonEmptyLine.slice(0, 150) + "..." : firstNonEmptyLine) 
-			: "Empty note";
+		// Get preview with all relevant terms
+		const searchTerms = [lowerQuery, ...relatedTerms];
+		return getPreview(content, searchTerms);
 	}
 
 	onClose() {

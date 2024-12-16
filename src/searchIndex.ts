@@ -1,7 +1,7 @@
 import { TFile, Vault } from 'obsidian';
 import { NLPProcessor, ProcessedText, ProcessedQuery } from './nlpProcessor';
 
-interface IndexedFile {
+export interface IndexedFile {
     path: string;
     filename: string;
     lastModified: number;
@@ -44,6 +44,10 @@ export class SearchIndex {
         this.vault = vault;
         this.nlpProcessor = nlpProcessor;
         this.index = new Map();
+    }
+
+    getEmotionMap(): Record<string, string[]> {
+        return this.emotionMap;
     }
 
     isFileIndexed(path: string): boolean {

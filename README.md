@@ -21,11 +21,12 @@ This sample plugin demonstrates some of the basic functionality the plugin API c
 - ALlows you to exclude specific files, folders, or tags from the search.
 
 - Allows you to only search within a specific folder or tag
+
 ## Logic
 
 Search function priortizes exact matches in titles and note content.
+Then, it will search based on NLP.
 
-THen, it will search based on NLP.
 ## Releasing new releases
 
 - Update your `manifest.json` with your new version number, such as `1.0.1`, and the minimum Obsidian version required for your latest release.

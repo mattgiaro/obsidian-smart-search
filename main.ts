@@ -1,6 +1,7 @@
 import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, SearchComponent, TFile, TAbstractFile, MarkdownFileInfo, EventRef, TextAreaComponent } from 'obsidian';
 import { SearchIndex } from './src/searchIndex';
 import { NLPProcessor } from './src/nlpProcessor';
+import type { IndexedFile } from './src/searchIndex';
 
 interface MyPluginSettings {
 	mySetting: string;
@@ -20,6 +21,7 @@ class SearchModal extends Modal {
 	private searchComponent: SearchComponent;
 	private resultsDiv: HTMLDivElement;
 	private searchIndex: SearchIndex;
+	private currentQuery: string = '';
 
 	constructor(app: App, searchIndex: SearchIndex) {
 		super(app);
@@ -49,6 +51,7 @@ class SearchModal extends Modal {
 
 		// Handle search input
 		this.searchComponent.inputEl.addEventListener('input', () => {
+			this.currentQuery = this.searchComponent.getValue();
 			this.updateResults();
 		});
 
@@ -57,7 +60,7 @@ class SearchModal extends Modal {
 	}
 
 	private updateResults() {
-		const query = this.searchComponent.getValue();
+		const query = this.currentQuery;
 		console.log('Search query:', query);
 		
 		if (query.length === 0) {
@@ -103,11 +106,15 @@ class SearchModal extends Modal {
 			titleEl.style.fontWeight = 'bold';
 			titleEl.style.marginBottom = '4px';
 
-			// Path
-			const pathEl = resultDiv.createDiv('search-result-path');
-			pathEl.setText(file.path);
-			pathEl.style.fontSize = '0.8em';
-			pathEl.style.color = 'var(--text-muted)';
+			// Match reason (in italics)
+			const matchReason = resultDiv.createDiv('search-result-reason');
+			matchReason.style.fontStyle = 'italic';
+			matchReason.style.fontSize = '0.9em';
+			matchReason.style.color = 'var(--text-muted)';
+			
+			// Get match reason
+			const reason = this.getMatchReason(file, query);
+			matchReason.setText(reason);
 
 			// Click handler to open the file
 			resultDiv.addEventListener('click', async () => {
@@ -118,6 +125,106 @@ class SearchModal extends Modal {
 				}
 			});
 		});
+	}
+
+	private getMatchReason(file: IndexedFile, query: string): string {
+		const lowerQuery = query.toLowerCase().trim();
+		const lowerTitle = file.filename.toLowerCase();
+		const content = file.processed.tokens.join(' ');
+		const headers = file.structuredContent.headers;
+
+		// Helper function to highlight keywords in text
+		const highlightKeywords = (text: string, terms: string[]): string => {
+			let result = text;
+			terms.forEach(term => {
+				const regex = new RegExp(`(${term})`, 'gi');
+				result = result.replace(regex, '**$1**');
+			});
+			return result;
+		};
+
+		// Helper function to find the line containing the match
+		const findMatchingLine = (text: string, searchTerms: string[]): string | null => {
+			const lines = text.split('\n');
+			const matchingLine = lines.find(line => 
+				searchTerms.some(term => 
+					line.toLowerCase().includes(term.toLowerCase()))
+			);
+			return matchingLine ? matchingLine.trim() : null;
+		};
+
+		// Helper function to get a concise preview
+		const getPreview = (text: string, searchTerms: string[]): string => {
+			const lines = text.split('\n')
+				.map(line => line.trim())
+				.filter(line => line.length > 0);
+			
+			// Find up to two lines containing any of the search terms
+			const matchingLines = lines.filter(line => 
+				searchTerms.some(term => 
+					line.toLowerCase().includes(term.toLowerCase()))
+			).slice(0, 2);
+
+			if (matchingLines.length === 0) {
+				// If no matches, return first non-empty line
+				return lines[0] ? lines[0].slice(0, 100) + "..." : "Empty note";
+			}
+
+			// Join matching lines and highlight terms
+			return highlightKeywords(
+				matchingLines.join(' | ').slice(0, 150) + (matchingLines.join(' ').length > 150 ? "..." : ""),
+				searchTerms
+			);
+		};
+
+		// For title matches
+		if (lowerTitle === lowerQuery || lowerTitle.includes(lowerQuery)) {
+			const matchingLine = findMatchingLine(content, [lowerQuery]);
+			if (matchingLine) {
+				return highlightKeywords(matchingLine, [lowerQuery]);
+			}
+			return "Empty note";
+		}
+
+		// Check headers
+		const matchingHeader = headers.find(h => 
+			h.toLowerCase().includes(lowerQuery));
+		if (matchingHeader) {
+			return highlightKeywords(matchingHeader, [lowerQuery]);
+		}
+
+		// Check for exact content match
+		const matchingLine = findMatchingLine(content, [lowerQuery]);
+		if (matchingLine) {
+			if (matchingLine.length > 150) {
+				const words = matchingLine.split(/\s+/);
+				const matchIndex = words.findIndex(w => 
+					w.toLowerCase().includes(lowerQuery));
+				if (matchIndex !== -1) {
+					const start = Math.max(0, matchIndex - 5);
+					const end = Math.min(words.length, matchIndex + 6);
+					return `...${highlightKeywords(words.slice(start, end).join(' '), [lowerQuery])}...`;
+				}
+			}
+			return highlightKeywords(matchingLine, [lowerQuery]);
+		}
+
+		// For semantic matches, find relevant lines with related terms
+		const relatedTerms = Object.entries(this.searchIndex.getEmotionMap())
+			.filter(([emotion, terms]) => 
+				emotion === lowerQuery || terms.includes(lowerQuery))
+			.flatMap(([emotion, terms]) => [emotion, ...terms]);
+
+		if (relatedTerms.length > 0) {
+			return getPreview(content, [lowerQuery, ...relatedTerms]);
+		}
+
+		// Fallback to first line with some content
+		const firstNonEmptyLine = content.split('\n')
+			.find(line => line.trim().length > 0);
+		return firstNonEmptyLine ? 
+			(firstNonEmptyLine.length > 150 ? firstNonEmptyLine.slice(0, 150) + "..." : firstNonEmptyLine) 
+			: "Empty note";
 	}
 
 	onClose() {

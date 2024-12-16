@@ -1,5 +1,6 @@
 import { TFile, Vault } from 'obsidian';
 import { NLPProcessor, ProcessedText, ProcessedQuery } from './nlpProcessor';
+import type MyPlugin from '../main';
 
 export interface IndexedFile {
     path: string;
@@ -28,6 +29,7 @@ export class SearchIndex {
     private index: Map<string, IndexedFile>;
     private nlpProcessor: NLPProcessor;
     private vault: Vault;
+    private plugin: MyPlugin;
     private excludedFolders: string[] = [];
     private excludedTags: string[] = [];
     
@@ -40,9 +42,10 @@ export class SearchIndex {
         'desire': ['lust', 'horny', 'wanting', 'craving', 'yearning']
     };
 
-    constructor(vault: Vault, nlpProcessor: NLPProcessor) {
+    constructor(vault: Vault, nlpProcessor: NLPProcessor, plugin: MyPlugin) {
         this.vault = vault;
         this.nlpProcessor = nlpProcessor;
+        this.plugin = plugin;
         this.index = new Map();
     }
 
@@ -144,7 +147,7 @@ export class SearchIndex {
 
     async indexFile(file: TFile): Promise<void> {
         try {
-            const content = await this.vault.cachedRead(file);
+            let content = await this.vault.cachedRead(file);
             const tags = this.extractTags(content);
             
             // Skip indexing if file is excluded
@@ -154,6 +157,11 @@ export class SearchIndex {
                 return;
             }
             
+            // Remove wiki links content if setting is enabled
+            if (this.plugin.settings.excludeWikilinks) {
+                content = content.replace(/\[\[([^\]]+)\]\]/g, '');
+            }
+
             const structuredContent = this.parseMarkdownContent(content);
             const tableContent = structuredContent.tables.flatMap(table => [
                 ...table.headers,

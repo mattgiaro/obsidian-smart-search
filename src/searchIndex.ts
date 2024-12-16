@@ -28,6 +28,8 @@ export class SearchIndex {
     private index: Map<string, IndexedFile>;
     private nlpProcessor: NLPProcessor;
     private vault: Vault;
+    private excludedFolders: string[] = [];
+    private excludedTags: string[] = [];
     
     private readonly emotionMap: Record<string, string[]> = {
         'anger': ['rage', 'fury', 'pissed-off', 'angry', 'mad', 'irritated'],
@@ -42,6 +44,27 @@ export class SearchIndex {
         this.vault = vault;
         this.nlpProcessor = nlpProcessor;
         this.index = new Map();
+    }
+
+    isFileIndexed(path: string): boolean {
+        return this.index.has(path);
+    }
+
+    setExclusions(excludedFolders: string[], excludedTags: string[]) {
+        this.excludedFolders = excludedFolders;
+        this.excludedTags = excludedTags;
+    }
+
+    private isFileExcluded(file: TFile, tags: string[]): boolean {
+        // Check if file is in excluded folder
+        const isInExcludedFolder = this.excludedFolders.some(folder => 
+            file.path.toLowerCase().startsWith(folder.toLowerCase() + '/'));
+
+        // Check if file has excluded tags
+        const hasExcludedTag = this.excludedTags.some(tag => 
+            tags.some(fileTag => fileTag.toLowerCase() === '#' + tag.toLowerCase()));
+
+        return isInExcludedFolder || hasExcludedTag;
     }
 
     private getRelatedTerms(term: string): string[] {
@@ -117,19 +140,23 @@ export class SearchIndex {
 
     async indexFile(file: TFile): Promise<void> {
         try {
-            console.log(`Reading file: ${file.path}`);
             const content = await this.vault.cachedRead(file);
+            const tags = this.extractTags(content);
+            
+            // Skip indexing if file is excluded
+            if (this.isFileExcluded(file, tags)) {
+                // Remove from index if it was previously indexed
+                this.index.delete(file.path);
+                return;
+            }
             
             const structuredContent = this.parseMarkdownContent(content);
-            
             const tableContent = structuredContent.tables.flatMap(table => [
                 ...table.headers,
                 ...table.rows.flat()
             ]);
 
             const processed = this.nlpProcessor.processText(content);
-            
-            const tags = this.extractTags(content);
             const frontmatter = this.extractFrontmatter(content);
             
             this.index.set(file.path, {

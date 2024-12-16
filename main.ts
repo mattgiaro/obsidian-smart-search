@@ -1,15 +1,19 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, SearchComponent, TFile, TAbstractFile, MarkdownFileInfo, EventRef } from 'obsidian';
+import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, SearchComponent, TFile, TAbstractFile, MarkdownFileInfo, EventRef, TextAreaComponent } from 'obsidian';
 import { SearchIndex } from './src/searchIndex';
 import { NLPProcessor } from './src/nlpProcessor';
 
 interface MyPluginSettings {
 	mySetting: string;
 	isVaultIndexed: boolean;
+	excludedFolders: string[];
+	excludedTags: string[];
 }
 
 const DEFAULT_SETTINGS: MyPluginSettings = {
 	mySetting: 'default',
-	isVaultIndexed: false
+	isVaultIndexed: false,
+	excludedFolders: [],
+	excludedTags: []
 }
 
 class SearchModal extends Modal {
@@ -198,6 +202,11 @@ export default class MyPlugin extends Plugin {
 		// Initialize search index immediately
 		if (!this.searchIndex) {
 			this.searchIndex = new SearchIndex(this.app.vault, new NLPProcessor('deep'));
+			// Apply exclusion settings
+			this.searchIndex.setExclusions(
+				this.settings.excludedFolders,
+				this.settings.excludedTags
+			);
 		}
 
 		// Add commands immediately so the plugin is responsive
@@ -244,6 +253,16 @@ export default class MyPlugin extends Plugin {
 		this.isIndexing = true;
 
 		try {
+			if (!this.searchIndex) {
+				throw new Error('Search index not initialized');
+			}
+
+			// Apply current exclusion settings before rebuilding
+			this.searchIndex.setExclusions(
+				this.settings.excludedFolders,
+				this.settings.excludedTags
+			);
+
 			// Create progress bar container
 			const progressContainer = document.createElement('div');
 			progressContainer.style.position = 'fixed';
@@ -284,10 +303,6 @@ export default class MyPlugin extends Plugin {
 			});
 
 			document.body.appendChild(progressContainer);
-
-			if (!this.searchIndex) {
-				throw new Error('Search index not initialized');
-			}
 
 			console.log('Building initial index...');
 			await this.searchIndex.buildInitialIndex((progress) => {
@@ -360,7 +375,18 @@ export default class MyPlugin extends Plugin {
 			if (!this.searchIndex) return;
 			if (file instanceof TFile && file.extension === 'md') {
 				console.log(`File modified: ${file.path}`);
+				
+				// Check if the file was previously excluded
+				const wasExcluded = !this.searchIndex.isFileIndexed(file.path);
+				
+				// Update the file in the index
 				await this.searchIndex.updateFile(file);
+				
+				// If the file was previously excluded but now should be included,
+				// notify the user
+				if (wasExcluded && this.searchIndex.isFileIndexed(file.path)) {
+					new Notice(`File "${file.basename}" is now included in search (exclusion criteria no longer met)`);
+				}
 			}
 		});
 
@@ -382,14 +408,26 @@ export default class MyPlugin extends Plugin {
 			}
 		});
 
-		// Watch for renamed files
+		// Watch for renamed/moved files
 		this.app.vault.on('rename', async (file, oldPath) => {
 			if (!this.searchIndex) return;
 			if (file instanceof TFile && file.extension === 'md') {
-				console.log(`File renamed from ${oldPath} to ${file.path}`);
-				// Remove old path and index new path
+				console.log(`File renamed/moved from ${oldPath} to ${file.path}`);
+				
+				// Check if the file was previously excluded
+				const wasExcluded = !this.searchIndex.isFileIndexed(oldPath);
+				
+				// Remove old path
 				this.searchIndex.removeFile(oldPath);
+				
+				// Index with new path
 				await this.searchIndex.indexFile(file);
+				
+				// If the file was previously excluded but now should be included,
+				// notify the user
+				if (wasExcluded && this.searchIndex.isFileIndexed(file.path)) {
+					new Notice(`File "${file.basename}" is now included in search (moved out of excluded folder)`);
+				}
 			}
 		});
 	}
@@ -397,8 +435,8 @@ export default class MyPlugin extends Plugin {
 	onunload() {
 		// Clear initialization timeout if it exists
 		if (this.initializationTimeout) {
-			clearTimeout(this.initializationTimeout);
-			this.initializationTimeout = null;
+				clearTimeout(this.initializationTimeout);
+				this.initializationTimeout = null;
 		}
 
 		// Clean up file watchers
@@ -429,6 +467,8 @@ export default class MyPlugin extends Plugin {
 
 class SampleSettingTab extends PluginSettingTab {
 	plugin: MyPlugin;
+	private excludedFoldersInput: TextAreaComponent;
+	private excludedTagsInput: TextAreaComponent;
 
 	constructor(app: App, plugin: MyPlugin) {
 		super(app, plugin);
@@ -441,6 +481,69 @@ class SampleSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h2', { text: 'Smart Search Settings' });
 
+		// Excluded Folders Setting
+		new Setting(containerEl)
+			.setName('Excluded Folders')
+			.setDesc('Enter folder paths to exclude from search (one per line). Example: "Daily Notes" or "Work/Projects"')
+			.addTextArea(text => {
+				this.excludedFoldersInput = text;
+				text.setValue(this.plugin.settings.excludedFolders.join('\n'))
+					.setPlaceholder('Daily Notes\nWork/Projects')
+					.onChange(async (value) => {
+						const folders = value.split('\n')
+							.map(f => f.trim())
+							.filter(f => f.length > 0);
+						this.plugin.settings.excludedFolders = folders;
+					});
+				text.inputEl.rows = 4;
+				text.inputEl.cols = 25;
+			});
+
+		// Excluded Tags Setting
+		new Setting(containerEl)
+			.setName('Excluded Tags')
+			.setDesc('Enter tags to exclude from search (one per line, without #). Example: "private" or "draft"')
+			.addTextArea(text => {
+				this.excludedTagsInput = text;
+				text.setValue(this.plugin.settings.excludedTags.join('\n'))
+					.setPlaceholder('private\ndraft')
+					.onChange(async (value) => {
+						const tags = value.split('\n')
+							.map(t => t.trim())
+							.filter(t => t.length > 0);
+						this.plugin.settings.excludedTags = tags;
+					});
+				text.inputEl.rows = 4;
+				text.inputEl.cols = 25;
+			});
+
+		// Save and Reindex Button
+		new Setting(containerEl)
+			.setName('Save Exclusions and Reindex')
+			.setDesc('Save your exclusion settings and rebuild the search index')
+			.addButton(button => {
+				button.setButtonText('Save and Reindex')
+					.onClick(async () => {
+						try {
+							button.setDisabled(true);
+							button.setButtonText('Saving and Reindexing...');
+							
+							await this.plugin.saveSettings();
+							new Notice('Settings saved. Rebuilding search index...');
+							await this.plugin.buildIndex();
+							
+							new Notice('Settings saved and index rebuilt successfully!');
+						} catch (error) {
+							console.error('Error saving settings and rebuilding index:', error);
+							new Notice('Error saving settings. Please try again.');
+						} finally {
+							button.setDisabled(false);
+							button.setButtonText('Save and Reindex');
+						}
+					});
+			});
+
+		// Re-index vault (existing setting)
 		new Setting(containerEl)
 			.setName('Re-index vault')
 			.setDesc('Re-index your vault to update the search index with any changes made while the plugin was disabled.')
